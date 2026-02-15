@@ -24,9 +24,12 @@ RUN mkdir -p /var/log/enphase_collector && \
 COPY --chown=app:app ../src/enphase_collector.py /app/
 COPY --chown=app:app ../src/energy_advisor.py /app/
 COPY --chown=app:app ../src/enphase_token.py /app/
+COPY --chown=app:app ../src/jaato_advisor.py /app/
+COPY --chown=app:app ../src/jaato_agents_config.py /app/
+COPY --chown=app:app ../src/external_apis.py /app/
 
-# Copy entrypoint script
-COPY entrypoint.sh /app/entrypoint.sh
+# Copy entrypoint script (from docker directory)
+COPY --chown=app:app docker/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # Set working directory

@@ -1,4 +1,5 @@
 influxdb-client==1.36.1
 requests==2.31.0
-jaato-sdk==0.1.0  # Jaato AI agent integration
+--extra-index-url https://test.pypi.org/simple/
+jaato-sdk==0.1.0  # Jaato AI agent integration (from TestPyPI)
 # ollama==0.1.7  # Deprecated: replaced by jaato-sdk

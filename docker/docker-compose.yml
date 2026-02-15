@@ -89,15 +89,8 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     container_name: jaato_energy_advisor
-    command: python3 -m jaato_advisor --interval ${ADVISOR_INTERVAL_SECONDS:-300}
-    volumes:
-      - /tmp/jaato.sock:/tmp/jaato.sock  # Jaato server socket (host通信)
-      - ../config:/config:ro
-      - ../data:/app/data
-      - jaato_logs:/var/log/jaato_advisor
-    env_file:
-      - ../.env
     environment:
+      - SERVICE_NAME=jaato_advisor
       - JAATO_SOCKET_PATH=/tmp/jaato.sock
       - INFLUXDB_URL=http://influxdb:8086
       - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-enphase-monitoring-token}
@@ -106,6 +99,13 @@ services:
       - ADVISOR_INTERVAL_SECONDS=${ADVISOR_INTERVAL_SECONDS:-300}
       - ESIOS_TOKEN=${ESIOS_TOKEN:-}
       - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY:-}
+    volumes:
+      - /tmp/jaato.sock:/tmp/jaato.sock  # Jaato server socket (host通信)
+      - ../config:/config:ro
+      - ../data:/app/data
+      - jaato_logs:/var/log/jaato_advisor
+    env_file:
+      - ../.env
     restart: unless-stopped
     networks:
       - energy_monitoring_net
