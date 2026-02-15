@@ -100,19 +100,30 @@ if [ "$JAATO_AVAILABLE" = true ]; then
     echo ""
     echo "🤖 Testing Jaato AI Advisor..."
     sleep 3  # Give advisor time to start
-
+    
+    # Check if container exists AND is running (not restarting)
     if docker ps | grep -q "jaato_energy_advisor"; then
-        echo "✅ Jaato AI Advisor container is running"
-
-        # Test socket connectivity
-        if docker exec jaato_energy_advisor ls -la /tmp/jaato.sock &> /dev/null; then
-            echo "✅ Advisor can connect to Jaato server"
+        # Check if it's actually healthy (not restarting)
+        restart_count=$(docker inspect jaato_energy_advisor --format='{{.RestartCount}}')
+        current_status=$(docker inspect jaato_energy_advisor --format='{{.State.Status}}')
+        
+        if [ "$restart_count" -lt 3 ] && [ "$current_status" = "running" ]; then
+            echo "✅ Jaato AI Advisor container is running"
+            
+            # Test socket connectivity
+            if docker exec jaato_energy_advisor ls -la /tmp/jaato.sock &> /dev/null; then
+                echo "✅ Advisor can access Jaato server socket"
+            else
+                echo "⚠️  Advisor cannot access Jaato server socket (permissions issue)"
+                echo "   Fix: sudo chmod 666 /tmp/jaato.sock"
+            fi
         else
-            echo "⚠️  Advisor cannot access Jaato server socket"
+            echo "⚠️  Jaato AI Advisor container is unstable (restart count: $restart_count)"
+            echo "   Check logs: docker logs jaato_energy_advisor"
         fi
     else
         echo "⚠️  Jaato AI Advisor container not running"
-        echo "   Check logs: $COMPOSE logs jaato_advisor"
+        echo "   Check logs: docker logs jaato_energy_advisor"
     fi
 fi
 
@@ -133,9 +144,24 @@ echo ""
 
 if [ "$JAATO_AVAILABLE" = true ]; then
     echo "🤖 Jaato AI Advisor:"
-    echo "  • Status: Running"
-    echo "  • Logs: $COMPOSE logs -f jaato_advisor"
-    echo "  • Test: docker exec jaato_energy_advisor python3 -m jaato_advisor --analyze-once"
+    echo "  • Status: Deployed"
+    
+    # Check if actually healthy
+    if docker ps | grep -q "jaato_energy_advisor"; then
+        restart_count=$(docker inspect jaato_energy_advisor --format='{{.RestartCount}}' 2>/dev/null || echo "0")
+        if [ "$restart_count" -lt 3 ]; then
+            echo "  • Health: Running ✓"
+            echo "  • Logs: docker logs -f jaato_energy_advisor"
+            echo "  • Test: docker exec jaato_energy_advisor python3 -m jaato_advisor --analyze-once"
+        else
+            echo "  • Health: Unstable (restart loop) ⚠️"
+            echo "  • Logs: docker logs jaato_energy_advisor"
+            echo "  • Fix: Check socket permissions (sudo chmod 666 /tmp/jaato.sock)"
+        fi
+    else
+        echo "  • Health: Not running ✗"
+        echo "  • Logs: docker logs jaato_energy_advisor"
+    fi
     echo ""
 fi
 
