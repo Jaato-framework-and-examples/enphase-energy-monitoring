@@ -1,0 +1,95 @@
+services:
+  # InfluxDB - Time-series database
+  influxdb:
+    image: influxdb:2.7
+    container_name: energy_monitoring_influxdb
+    ports:
+      - "8086:8086"
+    env_file:
+      - ../.env
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_ADMIN_ENABLED=true
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=adminpassword
+      - DOCKER_INFLUXDB_INIT_ORG=energy_monitoring
+      - DOCKER_INFLUXDB_INIT_BUCKET=home_energy
+      - DOCKER_INFLUXDB_INIT_RETENTION=30d
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${INFLUXDB_TOKEN:-enphase-monitoring-token}
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+      - influxdb_config:/etc/influxdb
+    restart: unless-stopped
+    networks:
+      - energy_monitoring_net
+
+  # Grafana - Visualization dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: energy_monitoring_grafana
+    ports:
+      - "3000:3000"
+    env_file:
+      - ../.env
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - grafana_config:/etc/grafana
+      - ../dashboards:/var/lib/grafana/dashboards:ro  # Dashboard JSON files
+      - ./grafana-provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro  # Dashboard provisioning
+      - ./grafana-provisioning/datasources:/etc/grafana/provisioning/datasources:ro  # Datasource provisioning
+      - grafana_provisioning:/var/lib/grafana/provisioning
+    restart: unless-stopped
+    networks:
+      - energy_monitoring_net
+    depends_on:
+      - influxdb
+
+  # Enphase Collector Daemon (Python-based)
+  # This service builds and runs the collector
+  # NOTE: network_mode: host is required for mDNS discovery to work
+  # If using manual gateway configuration (ENPHASE_GATEWAY_IP + SERIAL),
+  # you can remove network_mode: host and use the bridge network instead
+  enphase_collector:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: enphase_collector
+    network_mode: host  # Required for mDNS/Bonjour discovery (.local hostnames)
+    volumes:
+      - /var/log/enphase_collector:/var/log/enphase_collector
+      - ../config:/config:ro
+      - ../data:/app/data  # Persist token cache (writable by app user)
+      - /var/run/dbus:/var/run/dbus  # D-Bus system message bus
+      - /var/run/avahi-daemon/socket:/var/run/avahi-daemon/socket  # Avahi mDNS socket
+    env_file:
+      - ../.env
+    environment:
+      - ENPHASE_GATEWAY_IP=${ENPHASE_GATEWAY_IP:-}
+      - ENPHASE_GATEWAY_PORT=${ENPHASE_GATEWAY_PORT:-443}
+      - ENPHASE_GATEWAY_SERIAL=${ENPHASE_GATEWAY_SERIAL:-}
+      - ENPHASE_TOKEN_CACHE_DIR=/app/data/.enphase_tokens  # Writable directory for token cache
+      - ENPHASE_POLL_INTERVAL_SECONDS=${ENPHASE_POLL_INTERVAL_SECONDS:-300}  # Default: 5 minutes
+      - INFLUXDB_URL=http://localhost:8086
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-enphase-monitoring-token}
+    restart: unless-stopped
+    # networks:  # Not used with network_mode: host
+    #   - energy_monitoring_net
+    depends_on:
+      - influxdb
+
+networks:
+  energy_monitoring_net:
+    driver: bridge
+
+volumes:
+  influxdb_data:
+  influxdb_config:
+  grafana_data:
+  grafana_config:
+  grafana_dashboards:
+  grafana_provisioning:

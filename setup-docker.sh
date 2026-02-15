@@ -1,0 +1,107 @@
+#!/bin/bash
+# Quick setup script for Enphase Energy Monitoring System
+
+set -e
+
+echo "🔌 Enphase Energy Monitoring System Setup"
+echo "=========================================="
+echo ""
+
+# Check Docker
+if ! command -v docker &> /dev/null; then
+    echo "❌ Docker not installed. Install with: curl -sSL https://get.docker.com | sh"
+    exit 1
+fi
+
+# Check Docker Compose (plugin or standalone)
+if docker compose version &> /dev/null; then
+    COMPOSE="docker compose"
+elif command -v docker-compose &> /dev/null; then
+    COMPOSE="docker-compose"
+else
+    echo "❌ Docker Compose not found. Install with:"
+    echo "   sudo apt-get install docker-compose-plugin"
+    exit 1
+fi
+
+echo "✅ Docker and Docker Compose found ($COMPOSE)"
+echo ""
+
+# Check if Enphase gateway is reachable
+# NOTE: Skip host test since Docker container has Avahi socket mounted
+# The container can resolve .local hostnames even if the host cannot
+echo "📡 Gateway connectivity will be tested from inside the container"
+echo ""
+echo "🏗️ Building and starting containers..."
+echo ""
+
+# Create log directories
+mkdir -p logs
+
+# Stop and remove existing containers (if any) before starting fresh
+cd docker && $COMPOSE down --remove-orphans 2>/dev/null && cd ..
+
+# Always rebuild to pick up code changes, let Docker cache layers for speed
+echo "📦 Building and starting services..."
+cd docker && $COMPOSE up -d --build && cd ..
+
+echo ""
+echo "⏳ Waiting for services to be healthy..."
+echo ""
+
+# Wait for InfluxDB
+echo "Waiting for InfluxDB (port 8086)..."
+timeout 60 bash -c 'until curl -s http://localhost:8086/health &> /dev/null; do sleep 1; done' || {
+    echo "⚠️  InfluxDB did not start within 60 seconds"
+    echo "Check logs with: $COMPOSE logs influxdb"
+    exit 1
+}
+echo "✅ InfluxDB is ready!"
+
+# Wait for Grafana
+echo "Waiting for Grafana (port 3000)..."
+timeout 60 bash -c 'until curl -s http://localhost:3000/api/health &> /dev/null; do sleep 1; done' || {
+    echo "⚠️  Grafana did not start within 60 seconds"
+    echo "Check logs with: $COMPOSE logs grafana"
+    exit 1
+}
+echo "✅ Grafana is ready!"
+
+echo ""
+echo "🎯 Testing Enphase collector connection..."
+if docker exec enphase_collector python3 /app/enphase_collector.py --test-connection 2>&1 | grep -q "Gateway connection successful"; then
+    echo "✅ Collector can reach gateway!"
+else
+    echo "⚠️  Collector cannot reach gateway. Check:"
+    echo "   - Gateway IP: $GATEWAY_IP"
+    echo "   - Gateway port: $GATEWAY_PORT"
+    echo "   - Test manually: curl --insecure https://$GATEWAY_IP:$GATEWAY_PORT/"
+    echo ""
+    echo "The system will still start, but collector may have errors."
+fi
+
+echo ""
+echo "✅ Setup complete!"
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "🎉 Your Home Energy Monitoring System is Running!"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "📊 Access Points:"
+echo "  • Grafana:     http://localhost:3000"
+echo "    User: admin / admin"
+echo ""
+echo "  • InfluxDB:   http://localhost:8086"
+echo "    (Advanced - for raw data queries)"
+echo ""
+echo "📋 Next Steps:"
+echo "  1. Open Grafana and explore the dashboards"
+echo "  2. Check that data is flowing (real-time graphs)"
+echo "  3. Run: docker exec enphase_collector python3 /app/energy_advisor.py --analyze-once"
+echo ""
+echo "📚 View Logs:"
+echo "  $COMPOSE logs -f enphase_collector"
+echo ""
+echo "📚 Stop System:"
+echo "  $COMPOSE down"
+echo ""

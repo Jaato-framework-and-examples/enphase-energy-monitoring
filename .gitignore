@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+.venv/
+venv/
+ENV/
+# Keep the example configuration
+!.env.example
+
+# Data and logs
+data/
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+.build_version
+
+# InfluxDB data (if running locally)
+influxdb_data/
+grafana_data/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
