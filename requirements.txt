@@ -1,3 +1,4 @@
 influxdb-client==1.36.1
 requests==2.31.0
-ollama==0.1.7  # Optional: for LLM-based intelligence
+jaato-sdk==0.1.0  # Jaato AI agent integration
+# ollama==0.1.7  # Deprecated: replaced by jaato-sdk

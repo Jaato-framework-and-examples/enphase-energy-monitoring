@@ -12,7 +12,11 @@ Complete system for monitoring your Enphase solar production and grid consumptio
 - **Time-Series Storage** - InfluxDB for efficient data storage
 - **Beautiful Dashboards** - Grafana visualization
 - **Multi-Gateway Support** - Monitor multiple Enphase installations
-- **Energy Intelligence** - Optional AI-powered optimization recommendations
+- **Energy Intelligence** - 🆕 **Jaato-powered AI recommendations** (NEW!)
+  - Multi-agent system with specialized analysts
+  - Real-time streaming insights
+  - Memory system for learning preferences
+  - Tool use for external APIs (PVPC prices, weather)
 
 ## 🚀 Quick Start
 
@@ -48,6 +52,24 @@ pip install -r requirements.txt
 # Run collector
 bash run-local.sh
 ```
+
+### Option 3: Jaato AI Advisor (Docker)
+
+For intelligent energy optimization recommendations:
+
+```bash
+# Start Jaato server on host (required)
+jaato server
+
+# Run setup script (automated)
+cd docker
+bash setup-jaato-advisor.sh
+
+# Or manually deploy
+docker-compose up -d jaato_advisor
+```
+
+See [docs/JAATO_DOCKER_DEPLOYMENT.md](docs/JAATO_DOCKER_DEPLOYMENT.md) for detailed Docker deployment guide.
 
 ## 📁 Project Structure
 
@@ -163,7 +185,39 @@ python tests/test_login.py
 
 # Discover gateways
 python examples/discover_gateways.py
+
+# Test Jaato advisor (NEW!)
+python tests/test_jaato_advisor.py
 ```
+
+## 🤖 Jaato-Powered Energy Advisor (NEW!)
+
+The system now includes a sophisticated AI advisor using the Jaato multi-agent framework:
+
+### Quick Start
+
+```bash
+# Run one-shot analysis
+python src/jaato_advisor.py --analyze-once
+
+# Run continuous monitoring (5-min updates)
+python src/jaato_advisor.py --interval 300
+
+# Run tests
+python tests/test_jaato_advisor.py
+```
+
+### Features
+
+- **Multi-Agent System**: Specialized agents for price analysis, solar optimization, and appliance scheduling
+- **Real-Time Streaming**: Continuous insights via Jaato event system
+- **Memory System**: Learns user preferences over time
+- **Tool Use**: Integrates with external APIs (PVPC prices, weather forecasts)
+
+### Documentation
+
+- [JAATO_ADVISOR.md](docs/JAATO_ADVISOR.md) - Full documentation
+- [JAATO_QUICKSTART.md](docs/JAATO_QUICKSTART.md) - Quick reference
 
 ## 📚 Documentation
 
@@ -171,6 +225,8 @@ python examples/discover_gateways.py
 - [AUTHENTICATION.md](docs/AUTHENTICATION.md) - Token management
 - [QUICKSTART.md](docs/QUICKSTART.md) - Detailed setup guide
 - [DOCKER_NETWORK_TROUBLESHOOTING.md](docs/DOCKER_NETWORK_TROUBLESHOOTING.md) - Network issues
+- [JAATO_ADVISOR.md](docs/JAATO_ADVISOR.md) - Jaato AI advisor (NEW!)
+- [JAATO_QUICKSTART.md](docs/JAATO_QUICKSTART.md) - Jaato quick reference (NEW!)
 
 ## 🤝 Contributing
 

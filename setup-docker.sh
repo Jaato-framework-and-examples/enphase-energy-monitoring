@@ -1,5 +1,6 @@
 #!/bin/bash
 # Quick setup script for Enphase Energy Monitoring System
+# Now includes Jaato AI Advisor setup
 
 set -e
 
@@ -32,6 +33,20 @@ echo ""
 # The container can resolve .local hostnames even if the host cannot
 echo "📡 Gateway connectivity will be tested from inside the container"
 echo ""
+
+# Check for Jaato server (optional)
+if [ -S "/tmp/jaato.sock" ]; then
+    echo "✅ Jaato server detected at /tmp/jaato.sock"
+    echo "   → Jaato AI Advisor will be enabled"
+    JAATO_AVAILABLE=true
+else
+    echo "⚠️  Jaato server not found at /tmp/jaato.sock"
+    echo "   → Jaato AI Advisor will be skipped (optional feature)"
+    echo "   → To enable: Run 'jaato server' before this script"
+    JAATO_AVAILABLE=false
+fi
+echo ""
+
 echo "🏗️ Building and starting containers..."
 echo ""
 
@@ -80,6 +95,27 @@ else
     echo "The system will still start, but collector may have errors."
 fi
 
+# Jaato Advisor specific checks
+if [ "$JAATO_AVAILABLE" = true ]; then
+    echo ""
+    echo "🤖 Testing Jaato AI Advisor..."
+    sleep 3  # Give advisor time to start
+
+    if docker ps | grep -q "jaato_energy_advisor"; then
+        echo "✅ Jaato AI Advisor container is running"
+
+        # Test socket connectivity
+        if docker exec jaato_energy_advisor ls -la /tmp/jaato.sock &> /dev/null; then
+            echo "✅ Advisor can connect to Jaato server"
+        else
+            echo "⚠️  Advisor cannot access Jaato server socket"
+        fi
+    else
+        echo "⚠️  Jaato AI Advisor container not running"
+        echo "   Check logs: $COMPOSE logs jaato_advisor"
+    fi
+fi
+
 echo ""
 echo "✅ Setup complete!"
 echo ""
@@ -94,13 +130,35 @@ echo ""
 echo "  • InfluxDB:   http://localhost:8086"
 echo "    (Advanced - for raw data queries)"
 echo ""
+
+if [ "$JAATO_AVAILABLE" = true ]; then
+    echo "🤖 Jaato AI Advisor:"
+    echo "  • Status: Running"
+    echo "  • Logs: $COMPOSE logs -f jaato_advisor"
+    echo "  • Test: docker exec jaato_energy_advisor python3 -m jaato_advisor --analyze-once"
+    echo ""
+fi
+
 echo "📋 Next Steps:"
 echo "  1. Open Grafana and explore the dashboards"
 echo "  2. Check that data is flowing (real-time graphs)"
-echo "  3. Run: docker exec enphase_collector python3 /app/energy_advisor.py --analyze-once"
+
+if [ "$JAATO_AVAILABLE" = true ]; then
+    echo "  3. Try the AI advisor: docker exec jaato_energy_advisor python3 -m jaato_advisor --analyze-once"
+    echo "  4. Read: docs/JAATO_DOCKER_DEPLOYMENT.md"
+else
+    echo "  3. (Optional) Enable Jaato AI Advisor:"
+    echo "     - Start Jaato server: jaato server"
+    echo "     - Re-run: cd docker && $COMPOSE up -d jaato_advisor"
+    echo "     - Read: docs/JAATO_DOCKER_DEPLOYMENT.md"
+fi
+
 echo ""
 echo "📚 View Logs:"
 echo "  $COMPOSE logs -f enphase_collector"
+if [ "$JAATO_AVAILABLE" = true ]; then
+    echo "  $COMPOSE logs -f jaato_advisor  # AI advisor logs"
+fi
 echo ""
 echo "📚 Stop System:"
 echo "  $COMPOSE down"

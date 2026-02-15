@@ -82,6 +82,43 @@ services:
     depends_on:
       - influxdb
 
+  # Jaato Energy Advisor - AI-powered energy optimization
+  # Uses multi-agent system for intelligent recommendations
+  jaato_advisor:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: jaato_energy_advisor
+    command: python3 -m jaato_advisor --interval ${ADVISOR_INTERVAL_SECONDS:-300}
+    volumes:
+      - /tmp/jaato.sock:/tmp/jaato.sock  # Jaato server socket (host通信)
+      - ../config:/config:ro
+      - ../data:/app/data
+      - jaato_logs:/var/log/jaato_advisor
+    env_file:
+      - ../.env
+    environment:
+      - JAATO_SOCKET_PATH=/tmp/jaato.sock
+      - INFLUXDB_URL=http://influxdb:8086
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-enphase-monitoring-token}
+      - INFLUXDB_ORG=${INFLUXDB_ORG:-energy_monitoring}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-home_energy}
+      - ADVISOR_INTERVAL_SECONDS=${ADVISOR_INTERVAL_SECONDS:-300}
+      - ESIOS_TOKEN=${ESIOS_TOKEN:-}
+      - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY:-}
+    restart: unless-stopped
+    networks:
+      - energy_monitoring_net
+    depends_on:
+      - influxdb
+    # Optional: Add health check
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
 networks:
   energy_monitoring_net:
     driver: bridge
@@ -93,3 +130,4 @@ volumes:
   grafana_config:
   grafana_dashboards:
   grafana_provisioning:
+  jaato_logs:
