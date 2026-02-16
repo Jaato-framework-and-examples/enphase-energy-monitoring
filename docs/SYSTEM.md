@@ -29,18 +29,17 @@ I've created a **complete, production-ready system** for monitoring your Enphase
   - Solar Self-Consumption (self-sufficiency ratio)
 - **Refreshes every 10 seconds** - see live data
 
-### 4. **Energy Advisor** (`energy_advisor.py`)
-- **Rule-based engine:**
-  - Peak hour consumption detection
-  - Solar alignment analysis
-  - Price-aware recommendations (Spanish PVPC tariff)
-  - Estimated savings calculations
+### 4. **Jaato AI Advisor** (`jaato_advisor.py`)
+- **Multi-agent system** with 3 specialized agents:
+  - Price Analyst: PVPC tariff optimization
+  - Solar Optimizer: Self-consumption maximization
+  - Appliance Scheduler: Load shifting recommendations
   
-- **Optional LLM intelligence:**
-  - Ollama-based deep analysis
-  - Natural language recommendations
-  - Pattern explanation and insights
-  - Requires ~4GB RAM
+- **Real-time intelligence:**
+  - Jaato SDK integration with event streaming
+  - External API integration (ESIOS, OpenWeatherMap)
+  - Autonomous analysis (no user interaction required)
+  - Natural language recommendations with estimated savings
 
 ### 5. **Docker Compose Stack**
 - **Single command** starts everything
@@ -55,17 +54,22 @@ I've created a **complete, production-ready system** for monitoring your Enphase
 
 ```
 enphase_monitoring/
-├── enphase_collector.py          # Main data collection daemon
-├── energy_advisor.py             # Intelligence layer & recommendations
-├── docker-compose.yml             # Docker services configuration
-├── Dockerfile                   # Collector container definition
+├── src/
+│   ├── enphase_collector.py      # Main data collection daemon
+│   ├── jaato_advisor.py          # AI-powered energy advisor
+│   ├── jaato_agents_config.py    # Multi-agent configurations
+│   └── external_apis.py          # External API integrations
+├── docker/
+│   ├── docker-compose.yml        # Docker services configuration
+│   └── Dockerfile                # Container definition
+├── tests/
+│   └── test_jaato_advisor.py     # Advisor test suite
 ├── requirements.txt              # Python dependencies
-├── setup.sh                      # Automated setup script
-├── enphase_collector.service      # Systemd service file
+├── setup-docker.sh               # Automated setup script
 ├── dashboards/
-│   └── home-energy-overview.json  # Grafana dashboard
-├── README.md                      # Full documentation
-├── QUICKSTART.md                 # Quick reference card
+│   └── home-energy-overview.json # Grafana dashboard
+├── README.md                     # Full documentation
+└── docs/                         # Detailed guides
 ```
 
 ---
@@ -99,16 +103,16 @@ This script:
 - Net export/import (are you selling or buying?)
 - Historical trends (last hour, day, week)
 
-### Step 3: Get Recommendations
+### Step 3: Get AI-Powered Recommendations
 
-**Option A: Fast Rule-Based (Always works)**
-```bash
-docker exec enphase_collector python3 /app/energy_advisor.py --analyze-once --no-llm
-```
+The Jaato AI Advisor runs continuously and provides intelligent recommendations:
 
-**Option B: LLM-Enhanced (Requires ~4GB RAM)**
 ```bash
-docker exec enphase_collector python3 /app/energy_advisor.py --analyze-once
+# View advisor logs
+docker logs -f jaato_energy_advisor
+
+# Run one-shot analysis
+docker exec jaato_energy_advisor python3 -m jaato_advisor --analyze-once
 ```
 
 **Example output:**
@@ -160,32 +164,23 @@ def _parse_readings(self, data: Dict[str, Any]) -> Dict[str, Any]:
 
 ### 3. **Add Custom Recommendation Rules**
 
-Edit `energy_advisor.py` → `generate_rule_based_recommendations()`:
+Edit `src/jaato_agents_config.py` to customize agent behaviors:
 ```python
-# Your custom logic
-if your_condition:
-    recommendations.append({
-        "type": "custom_optimization",
-        "severity": "high",
-        "title": "Your Custom Title",
-        "description": "Detailed explanation...",
-        "actions": ["action1", "action2"],
-        "estimated_savings_eur_per_year": 75.0
-    })
+# Add custom analysis logic to agents
+# Each agent has specific tools and capabilities
 ```
 
-### 4. **Adjust PVPC Prices**
+### 4. **Configure External APIs**
 
-Edit `PRICE_ESTIMATES` in `energy_advisor.py`:
-```python
-PRICE_ESTIMATES = {
-    "peak": 0.22,   # Peak hour price
-    "flat": 0.15,   # Flat hour price
-    "valley": 0.08   # Valley hour price
-}
+The advisor integrates with external APIs for real-time data:
+- **ESIOS API**: Spanish electricity prices (requires token)
+- **OpenWeatherMap**: Weather forecasts for solar prediction
+
+Set API keys in `.env`:
+```bash
+ESIOS_TOKEN=your_token_here
+OPENWEATHER_API_KEY=your_key_here
 ```
-
-You can also **fetch real-time prices** from ESIOS API!
 
 ### 5. **Change InfluxDB Retention**
 
@@ -251,17 +246,13 @@ influxdb:
 - [x] Grafana dashboards
 - [x] Understanding your patterns
 
-### 🔄 Phase 2: Intelligence Layer (READY)
-- [x] Rule-based recommendations working
-- [x] Manual integration
-- [x] Estimated savings calculations
+### ✅ Phase 2: AI Intelligence Layer (COMPLETE)
+- [x] Jaato multi-agent advisor running
+- [x] Real-time price fetching (ESIOS API)
+- [x] Weather integration (OpenWeatherMap)
+- [x] Autonomous recommendations with savings estimates
 
-### 📋 Phase 3: Enhanced Intelligence (OPTIONAL)
-- [ ] Real-time price fetching (ESIOS API)
-- [ ] LLM-based recommendations (Ollama)
-- [ ] Appliance automation triggers
-
-### 🚀 Phase 4: Automation (FUTURE)
+### 🚀 Phase 3: Automation (FUTURE)
 - [ ] Smart plug integration (Tasmota, etc.)
 - [ ] Automatic scheduling recommendations
 - [ ] Mobile app for alerts
@@ -302,10 +293,11 @@ Based on rule-based recommendations, you could save:
 3. Check gateway API documentation for correct endpoint
 4. Verify same network / no firewall blocking
 
-### Ollama Out of Memory?
-1. Stop container: `docker-compose stop ollama`
-2. Run without LLM: `--no-llm` flag
-3. Or increase Docker memory limit
+### Jaato Advisor Issues?
+1. Check Jaato server is running: `ls -la /tmp/jaato.sock`
+2. View advisor logs: `docker logs -f jaato_energy_advisor`
+3. Test one-shot analysis: `docker exec jaato_energy_advisor python3 -m jaato_advisor --analyze-once`
+4. The advisor gracefully degrades if Jaato server is unavailable
 
 ---
 

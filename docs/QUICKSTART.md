@@ -32,10 +32,11 @@ Then open http://localhost:3000 (admin/admin)
 
 | File | Purpose |
 |------|---------|
-| `enphase_collector.py` | Main data collection daemon |
-| `energy_advisor.py` | Intelligence layer (recommendations) |
-| `docker-compose.yml` | Docker services configuration |
-| `setup.sh` | Automated setup script |
+| `src/enphase_collector.py` | Main data collection daemon |
+| `src/jaato_advisor.py` | AI-powered energy advisor |
+| `src/jaato_agents_config.py` | Multi-agent configurations |
+| `docker/docker-compose.yml` | Docker services configuration |
+| `setup-docker.sh` | Automated setup script |
 | `requirements.txt` | Python dependencies |
 
 ---
@@ -70,13 +71,13 @@ docker-compose restart influxdb
 docker-compose restart grafana
 ```
 
-### Get Recommendations
+### Get AI Recommendations
 ```bash
-# Rule-based (fast)
-docker exec enphase_collector python3 /app/energy_advisor.py --analyze-once --no-llm
+# View advisor logs
+docker logs -f jaato_energy_advisor
 
-# With LLM intelligence (slower, smarter)
-docker exec enphase_collector python3 /app/energy_advisor.py --analyze-once
+# Run one-shot analysis
+docker exec jaato_energy_advisor python3 -m jaato_advisor --analyze-once
 ```
 
 ### Test Gateway Connection

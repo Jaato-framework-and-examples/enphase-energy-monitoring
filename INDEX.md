@@ -30,9 +30,11 @@ Then open http://localhost:3000 (admin/admin) to see real-time energy graphs!
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| **Data Collector** | `enphase_collector.py` | Polls gateway, stores to InfluxDB |
-| **Energy Advisor** | `energy_advisor.py` | Pattern analysis & recommendations |
-| **Docker Stack** | `docker-compose.yml` | All services configured |
+| **Data Collector** | `src/enphase_collector.py` | Polls gateway, stores to InfluxDB |
+| **AI Advisor** | `src/jaato_advisor.py` | Multi-agent energy optimization |
+| **Agent Configs** | `src/jaato_agents_config.py` | Specialized agent configurations |
+| **External APIs** | `src/external_apis.py` | ESIOS, Weather integrations |
+| **Docker Stack** | `docker/docker-compose.yml` | All services configured |
 | **Dashboards** | `dashboards/*.json` | Grafana visualizations |
 
 ---
@@ -41,16 +43,16 @@ Then open http://localhost:3000 (admin/admin) to see real-time energy graphs!
 
 ```bash
 # Start everything
-docker-compose up -d
+./setup-docker.sh
 
 # View logs
-docker-compose logs -f
+docker logs -f jaato_energy_advisor
 
 # Get recommendations
-docker exec enphase_collector python3 /app/energy_advisor.py --analyze-once --no-llm
+docker exec jaato_energy_advisor python3 -m jaato_advisor --analyze-once
 
 # Stop everything
-docker-compose down
+docker compose down
 ```
 
 ---
@@ -86,7 +88,9 @@ InfluxDB (time-series database)
        ↓
 Grafana (dashboards)
        ↓
-Energy Advisor (optional intelligence)
+Jaato AI Advisor (multi-agent optimization)
+       ↓
+External APIs (ESIOS, Weather)
 ```
 
 ---
@@ -99,12 +103,12 @@ Energy Advisor (optional intelligence)
 - ✅ Export/import visualization
 - ✅ Historical trends (hourly, daily, weekly)
 
-### Phase 2: Intelligence Layer (Optional)
-- ✅ Peak hour consumption detection
-- ✅ Solar alignment analysis
-- ✅ Price-aware recommendations (Spanish PVPC)
-- ✅ Estimated savings calculations
-- ✅ Optional LLM-based deep insights
+### Phase 2: AI Intelligence (Active)
+- ✅ Multi-agent energy optimization
+- ✅ Real-time price fetching (ESIOS API)
+- ✅ Weather integration (solar prediction)
+- ✅ Autonomous recommendations
+- ✅ Natural language insights
 
 ---
 

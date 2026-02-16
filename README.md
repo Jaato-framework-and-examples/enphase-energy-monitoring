@@ -90,9 +90,16 @@ enphase_monitoring/
 ├── src/                     # Source code
 │   ├── enphase_collector.py  # Main collector daemon
 │   ├── enphase_token.py      # Auth & mDNS discovery
-│   └── energy_advisor.py     # AI recommendations
+│   ├── jaato_advisor.py      # AI-powered energy advisor
+│   ├── jaato_agents_config.py # Multi-agent configurations
+│   └── external_apis.py      # External API integrations
+│
+├── tests/                   # Test suite
+│   └── test_jaato_advisor.py
 │
 ├── docs/                   # Documentation
+│   ├── JAATO_ADVISOR.md
+│   ├── JAATO_QUICKSTART.md
 │   ├── AUTHENTICATION.md
 │   ├── SYSTEM.md
 │   └── QUICKSTART.md
