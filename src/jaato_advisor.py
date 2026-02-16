@@ -40,10 +40,11 @@ except ImportError:
     INFLUXDB_AVAILABLE = False
 
 # Configuration
-INFLUXDB_URL = "http://localhost:8086"
-INFLUXDB_TOKEN = ""
-INFLUXDB_ORG = "energy_monitoring"
-INFLUXDB_BUCKET = "home_energy"
+import os
+INFLUXDB_URL = os.getenv("INFLUXDB_URL", "http://localhost:8086")
+INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN", "")
+INFLUXDB_ORG = os.getenv("INFLUXDB_ORG", "energy_monitoring")
+INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET", "home_energy")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -120,7 +121,11 @@ class JaatoClientWrapper:
         if not self._connected:
             raise RuntimeError("Not connected to jaato server")
         
-        async for event in self.client.send_message_and_stream(message):
+        # Send the message
+        await self.client.send_message(message)
+        
+        # Stream the response events
+        async for event in self.client.events():
             yield event
     
     async def get_events(self) -> AsyncIterator[Event]:
@@ -152,14 +157,14 @@ class InfluxDBFetcher:
         self.bucket = INFLUXDB_BUCKET
     
     async def get_current_readings(self) -> Dict[str, float]:
-        """Get current energy readings."""
+        """Get current energy readings using Flux query."""
         query = f'''
-        SELECT last("grid_consumption_w") as consumption,
-               last("solar_production_w") as production,
-               last("grid_import_w") as import_w,
-               last("grid_export_w") as export_w
-        FROM "{self.bucket}"
-        WHERE time > now() - 5m
+        from(bucket: "{self.bucket}")
+          |> range(start: -5m)
+          |> filter(fn: (r) => r["_measurement"] == "home_energy")
+          |> last(column: "_time")
+          |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
+          |> keep(columns: ["grid_consumption_w", "solar_production_w", "grid_import_w", "grid_export_w"])
         '''
         
         try:
@@ -174,10 +179,19 @@ class InfluxDBFetcher:
             
             for table in result:
                 for record in table.records:
-                    for key in readings.keys():
-                        value = record.get_value()
-                        if value is not None:
-                            readings[key] = float(value)
+                    consumption = record.values.get("grid_consumption_w")
+                    production = record.values.get("solar_production_w")
+                    import_w = record.values.get("grid_import_w")
+                    export_w = record.values.get("grid_export_w")
+                    
+                    if consumption is not None:
+                        readings["consumption"] = float(consumption)
+                    if production is not None:
+                        readings["production"] = float(production)
+                    if import_w is not None:
+                        readings["import"] = float(import_w)
+                    if export_w is not None:
+                        readings["export"] = float(export_w)
             
             return readings
             
@@ -186,13 +200,14 @@ class InfluxDBFetcher:
             return {"consumption": 0.0, "production": 0.0, "import": 0.0, "export": 0.0}
     
     async def get_hourly_patterns(self, hours: int = 24) -> Dict[str, Dict[int, float]]:
-        """Get hourly consumption and production patterns."""
+        """Get hourly consumption and production patterns using Flux query."""
         query = f'''
-        SELECT MEAN("grid_consumption_w") as consumption,
-               MEAN("solar_production_w") as production
-        FROM "{self.bucket}"
-        WHERE time > now() - {hours}h
-        GROUP BY time(1h)
+        from(bucket: "{self.bucket}")
+          |> range(start: -{hours}h)
+          |> filter(fn: (r) => r["_measurement"] == "home_energy")
+          |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
+          |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
+          |> keep(columns: ["_time", "grid_consumption_w", "solar_production_w"])
         '''
         
         try:
@@ -203,14 +218,16 @@ class InfluxDBFetcher:
             
             for table in result:
                 for record in table.records:
-                    hour = record.get_time().hour
-                    consumption = record.values.get("consumption")
-                    production = record.values.get("production")
-                    
-                    if consumption is not None:
-                        hourly_consumption[hour] = float(consumption)
-                    if production is not None:
-                        hourly_production[hour] = float(production)
+                    time_val = record.values.get("_time")
+                    if time_val:
+                        hour = time_val.hour
+                        consumption = record.values.get("grid_consumption_w")
+                        production = record.values.get("solar_production_w")
+                        
+                        if consumption is not None:
+                            hourly_consumption[hour] = float(consumption)
+                        if production is not None:
+                            hourly_production[hour] = float(production)
             
             return {
                 "consumption": hourly_consumption,
@@ -273,6 +290,23 @@ class JaatoEnergyAdvisor:
     async def initialize(self) -> bool:
         """Initialize connections."""
         logger.info("Initializing Jaato Energy Advisor...")
+        
+        # Wait for InfluxDB to be ready (it may start after advisor)
+        logger.info("Waiting for InfluxDB to be ready...")
+        import asyncio
+        for attempt in range(10):
+            try:
+                import socket
+                sock = socket.socket()
+                sock.settimeout(1)
+                result = sock.connect_ex(("influxdb", 8086))
+                sock.close()
+                if result == 0:
+                    logger.info("✓ InfluxDB is ready")
+                    break
+            except:
+                pass
+            await asyncio.sleep(1)
         
         # Connect to jaato server
         if not await self.jaato.connect():

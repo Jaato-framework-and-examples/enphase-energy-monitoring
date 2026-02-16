@@ -54,7 +54,14 @@ echo ""
 mkdir -p logs
 
 # Stop and remove existing containers (if any) before starting fresh
-cd docker && $COMPOSE down --remove-orphans 2>/dev/null && cd ..
+cd docker && $COMPOSE down -v --remove-orphans 2>/dev/null && cd ..
+
+# Also remove any lingering containers manually (both prefixed and non-prefixed)
+echo "Removing any lingering containers..."
+docker rm -f $(docker ps -aq --filter "name=energy_monitoring") 2>/dev/null || true
+docker rm -f $(docker ps -aq --filter "name=enphase_collector") 2>/dev/null || true
+docker rm -f $(docker ps -aq --filter "name=jaato_energy_advisor") 2>/dev/null || true
+echo "✓ Cleanup complete"
 
 # Always rebuild to pick up code changes, let Docker cache layers for speed
 echo "📦 Building and starting services..."
@@ -84,15 +91,24 @@ echo "✅ Grafana is ready!"
 
 echo ""
 echo "🎯 Testing Enphase collector connection..."
-if docker exec enphase_collector python3 /app/enphase_collector.py --test-connection 2>&1 | grep -q "Gateway connection successful"; then
-    echo "✅ Collector can reach gateway!"
+# Check if collector is actually running and collecting data
+if docker exec enphase_collector getent hosts envoy.local > /dev/null 2>&1; then
+    # mDNS is working
+    envoy_ip=$(docker exec enphase_collector getent hosts envoy.local | awk '{print $1}')
+    echo "✅ Collector can resolve gateway via mDNS (envoy.local → $envoy_ip)"
+    
+    # Check if it's collecting data
+    if docker logs enphase_collector 2>&1 | grep -q "Collected readings"; then
+        echo "✅ Collector is actively collecting data from gateway"
+    else
+        echo "⚠️  Collector started but hasn't collected data yet (may need more time)"
+    fi
 else
-    echo "⚠️  Collector cannot reach gateway. Check:"
-    echo "   - Gateway IP: $GATEWAY_IP"
-    echo "   - Gateway port: $GATEWAY_PORT"
-    echo "   - Test manually: curl --insecure https://$GATEWAY_IP:$GATEWAY_PORT/"
-    echo ""
-    echo "The system will still start, but collector may have errors."
+    echo "⚠️  Collector cannot resolve gateway via mDNS"
+    echo "   Check:"
+    echo "   - Gateway is online and reachable"
+    echo "   - Avahi daemon is running on host"
+    echo "   - Socket mounts: /var/run/dbus and /var/run/avahi-daemon/socket"
 fi
 
 # Jaato Advisor specific checks
