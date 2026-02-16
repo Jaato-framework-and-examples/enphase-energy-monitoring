@@ -22,7 +22,6 @@ RUN mkdir -p /var/log/enphase_collector && \
 
 # Copy application files (from parent directory)
 COPY --chown=app:app ../src/enphase_collector.py /app/
-COPY --chown=app:app ../src/energy_advisor.py /app/
 COPY --chown=app:app ../src/enphase_token.py /app/
 COPY --chown=app:app ../src/jaato_advisor.py /app/
 COPY --chown=app:app ../src/jaato_agents_config.py /app/
