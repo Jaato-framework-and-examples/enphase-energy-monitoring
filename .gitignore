@@ -15,8 +15,8 @@ venv/
 ENV/
 # Keep the example configuration
 !.env.example
-# Allow docker/.env (deployment configuration)
-!docker/.env
+# docker/.env contains sensitive credentials - use .env.example as template
+docker/.env
 
 # Data and logs
 data/
