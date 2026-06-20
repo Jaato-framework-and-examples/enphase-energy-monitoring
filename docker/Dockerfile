@@ -24,7 +24,6 @@ RUN mkdir -p /var/log/enphase_collector && \
 COPY --chown=app:app ../src/enphase_collector.py /app/
 COPY --chown=app:app ../src/enphase_token.py /app/
 COPY --chown=app:app ../src/jaato_advisor.py /app/
-COPY --chown=app:app ../src/jaato_agents_config.py /app/
 COPY --chown=app:app ../src/external_apis.py /app/
 
 # Copy entrypoint script (from docker directory)

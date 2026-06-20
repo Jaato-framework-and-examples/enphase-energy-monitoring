@@ -1,0 +1,11 @@
+# solar_optimizer — zhipuai set: glm-4.7.
+name: solar_optimizer
+inherits: [_base_solar_optimizer]
+plugins: []  # empty keeps the inherited _base surface
+model: glm-4.7
+provider: zhipuai
+plugin_configs:
+  zhipuai:
+    api_params:
+      temperature: 0.7  # some latitude for optimization strategies
+      max_tokens: 1500

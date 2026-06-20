@@ -2,49 +2,64 @@
 """
 Jaato-Powered Smart Energy Advisor
 
-Replaces Ollama with jaato agents for intelligent energy recommendations.
-Features:
-- Real-time streaming insights via jaato event system
-- Specialized subagents for price analysis, solar optimization, appliance scheduling
-- Memory system for learning user preferences
-- Tool use for external APIs (PVPC prices, weather forecasts)
-- Multi-agent reasoning with coordinated planning
+Drives three specialist jaato agents (price_analyst, solar_optimizer,
+appliance_scheduler) over the current jaato SDK to produce home-energy
+recommendations.
+
+Architecture:
+- Energy context (live readings + 24h patterns) is fetched from InfluxDB in
+  Python and embedded into each agent's prompt — the agents have no tools.
+- Each specialist runs in its own jaato session, selected from the
+  `.jaato/profiles/` profile-set via JAATO_PROFILE_SET + the agent persona in
+  `.jaato/agents/<name>.md`. Sessions run sequentially on one API client.
+- Completion is detected per turn via EventType.TURN_COMPLETED; streamed text
+  arrives via EventType.AGENT_OUTPUT.
+
+Preflight: python -m jaato_sdk.doctor --workspace . --env-file .env
 """
 
+import argparse
 import asyncio
 import json
 import logging
+import os
+import socket
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, AsyncIterator
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
-import sys
+from jaato_sdk import IPCClient, ClientType, EventType
+from jaato_sdk.events import AgentOutputEvent, ErrorEvent, TurnCompletedEvent
 
-sys.path.insert(
-    0,
-    str(Path(__file__).parent.parent / ".venv/lib/python3.12/site-packages")
-)
-
-try:
-    from jaato_sdk.client import IPCRecoveryClient, ConnectionState
-    from jaato_sdk.events import Event, EventType
-    JAATO_SDK_AVAILABLE = True
-except ImportError:
-    JAATO_SDK_AVAILABLE = False
-
-try:
-    from influxdb_client import InfluxDBClient
-    INFLUXDB_AVAILABLE = True
-except ImportError:
-    INFLUXDB_AVAILABLE = False
+from influxdb_client import InfluxDBClient
 
 # Configuration
-import os
 INFLUXDB_URL = os.getenv("INFLUXDB_URL", "http://localhost:8086")
 INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN", "")
 INFLUXDB_ORG = os.getenv("INFLUXDB_ORG", "energy_monitoring")
 INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET", "home_energy")
+
+JAATO_SOCKET = os.getenv("JAATO_SOCKET", "/tmp/jaato.sock")
+ENV_FILE = os.getenv("JAATO_ENV_FILE", ".env")
+WORKSPACE = os.getenv("JAATO_WORKSPACE", str(Path(__file__).resolve().parent.parent))
+
+# The specialists run in this order; each name is both the profile name (within
+# the active JAATO_PROFILE_SET) and the agent persona under .jaato/agents/.
+SPECIALISTS: List[str] = ["price_analyst", "solar_optimizer", "appliance_scheduler"]
+
+SPECIALIST_TASKS: Dict[str, str] = {
+    "price_analyst":
+        "Analyze the price exposure in the data above and recommend specific "
+        "load-shifting actions with €/year savings estimates.",
+    "solar_optimizer":
+        "Analyze the solar self-consumption in the data above and recommend "
+        "alignment/battery strategies with €/year savings estimates.",
+    "appliance_scheduler":
+        "Produce a concrete appliance schedule (specific time windows) based on "
+        "the prices and solar production in the data above, with €/year savings.",
+}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -63,177 +78,103 @@ class EnergyContext:
     battery_level_pct: Optional[float] = None
     current_hour: int = 0
     current_day_of_week: int = 0
-    
+
     # Price information
     current_price_eur_kwh: float = 0.15
     price_period: str = "flat"  # peak, flat, valley
-    
+
     # Historical patterns (last 24h)
     hourly_consumption: Dict[int, float] = field(default_factory=dict)
     hourly_production: Dict[int, float] = field(default_factory=dict)
-    
-    # User preferences (from memory)
-    appliance_schedules: Dict[str, str] = field(default_factory=dict)
-    flexible_loads: List[str] = field(default_factory=list)
-    preferred_analysis_times: List[int] = field(default_factory=list)
-
-
-class JaatoClientWrapper:
-    """Wrapper for jaato SDK client with automatic reconnection."""
-    
-    def __init__(
-        self,
-        socket_path: str = "/tmp/jaato.sock",
-        auto_start: bool = True,
-        env_file: str = ".env"
-    ):
-        if not JAATO_SDK_AVAILABLE:
-            raise RuntimeError("jaato-sdk not available. Install with: pip install jaato-sdk")
-        
-        self.socket_path = socket_path
-        self.client = IPCRecoveryClient(
-            socket_path=socket_path,
-            auto_start=auto_start,
-            env_file=env_file
-        )
-        self._connected = False
-        
-    async def connect(self) -> bool:
-        """Connect to jaato server."""
-        try:
-            await self.client.connect()
-            self._connected = True
-            logger.info(f"Connected to jaato server at {self.socket_path}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to connect to jaato server: {e}")
-            return False
-    
-    async def disconnect(self):
-        """Disconnect from jaato server."""
-        if self._connected:
-            await self.client.disconnect()
-            self._connected = False
-            logger.info("Disconnected from jaato server")
-    
-    async def send_message(self, message: str) -> AsyncIterator[Event]:
-        """Send message and stream response events."""
-        if not self._connected:
-            raise RuntimeError("Not connected to jaato server")
-        
-        # Send the message
-        await self.client.send_message(message)
-        
-        # Stream the response events
-        async for event in self.client.events():
-            yield event
-    
-    async def get_events(self) -> AsyncIterator[Event]:
-        """Get all events from server."""
-        if not self._connected:
-            raise RuntimeError("Not connected to jaato server")
-        
-        async for event in self.client.events():
-            yield event
-    
-    @property
-    def connection_state(self) -> ConnectionState:
-        """Get current connection state."""
-        return self.client.state if self._connected else ConnectionState.DISCONNECTED
 
 
 class InfluxDBFetcher:
     """Fetches energy data from InfluxDB."""
-    
+
     def __init__(self, url: str, token: str = ""):
-        if not INFLUXDB_AVAILABLE:
-            raise RuntimeError("InfluxDB client not available")
-        
         self.client = InfluxDBClient(
             url=url,
             token=token if token else None,
             org=INFLUXDB_ORG
         )
         self.bucket = INFLUXDB_BUCKET
-    
+
     async def get_current_readings(self) -> Dict[str, float]:
-        """Get current energy readings using Flux query."""
+        """Get current energy readings using Flux query.
+
+        The collector writes measurement ``energy_readings`` with fields
+        ``home_consumption_w`` and ``solar_production_w``. Grid import/export
+        are not metered, so they are derived from the consumption/production
+        balance: import = max(0, cons - prod), export = max(0, prod - cons).
+        """
         query = f'''
         from(bucket: "{self.bucket}")
-          |> range(start: -5m)
-          |> filter(fn: (r) => r["_measurement"] == "home_energy")
+          |> range(start: -10m)
+          |> filter(fn: (r) => r["_measurement"] == "energy_readings")
           |> last(column: "_time")
           |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
-          |> keep(columns: ["grid_consumption_w", "solar_production_w", "grid_import_w", "grid_export_w"])
+          |> keep(columns: ["home_consumption_w", "solar_production_w"])
         '''
-        
+
         try:
             result = self.client.query_api().query(query=query)
-            
-            readings = {
-                "consumption": 0.0,
-                "production": 0.0,
-                "import": 0.0,
-                "export": 0.0
-            }
-            
+
+            consumption = production = 0.0
             for table in result:
                 for record in table.records:
-                    consumption = record.values.get("grid_consumption_w")
-                    production = record.values.get("solar_production_w")
-                    import_w = record.values.get("grid_import_w")
-                    export_w = record.values.get("grid_export_w")
-                    
-                    if consumption is not None:
-                        readings["consumption"] = float(consumption)
-                    if production is not None:
-                        readings["production"] = float(production)
-                    if import_w is not None:
-                        readings["import"] = float(import_w)
-                    if export_w is not None:
-                        readings["export"] = float(export_w)
-            
-            return readings
-            
+                    c = record.values.get("home_consumption_w")
+                    p = record.values.get("solar_production_w")
+                    if c is not None:
+                        consumption = float(c)
+                    if p is not None:
+                        production = float(p)
+
+            return {
+                "consumption": consumption,
+                "production": production,
+                "import": max(0.0, consumption - production),
+                "export": max(0.0, production - consumption),
+            }
+
         except Exception as e:
             logger.error(f"Failed to fetch current readings: {e}")
             return {"consumption": 0.0, "production": 0.0, "import": 0.0, "export": 0.0}
-    
+
     async def get_hourly_patterns(self, hours: int = 24) -> Dict[str, Dict[int, float]]:
         """Get hourly consumption and production patterns using Flux query."""
         query = f'''
         from(bucket: "{self.bucket}")
           |> range(start: -{hours}h)
-          |> filter(fn: (r) => r["_measurement"] == "home_energy")
+          |> filter(fn: (r) => r["_measurement"] == "energy_readings")
           |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
           |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
-          |> keep(columns: ["_time", "grid_consumption_w", "solar_production_w"])
+          |> keep(columns: ["_time", "home_consumption_w", "solar_production_w"])
         '''
-        
+
         try:
             result = self.client.query_api().query(query=query)
-            
+
             hourly_consumption = {i: 0.0 for i in range(24)}
             hourly_production = {i: 0.0 for i in range(24)}
-            
+
             for table in result:
                 for record in table.records:
                     time_val = record.values.get("_time")
                     if time_val:
                         hour = time_val.hour
-                        consumption = record.values.get("grid_consumption_w")
+                        consumption = record.values.get("home_consumption_w")
                         production = record.values.get("solar_production_w")
-                        
+
                         if consumption is not None:
                             hourly_consumption[hour] = float(consumption)
                         if production is not None:
                             hourly_production[hour] = float(production)
-            
+
             return {
                 "consumption": hourly_consumption,
                 "production": hourly_production
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to fetch hourly patterns: {e}")
             return {"consumption": {}, "production": {}}
@@ -241,13 +182,13 @@ class InfluxDBFetcher:
 
 class PriceEstimator:
     """Estimates electricity prices using PVPC data."""
-    
+
     PVPC_PRICES = {
         "peak": 0.22,      # 10:00-14:00, 18:00-22:00
         "flat": 0.15,      # 08:00-10:00, 14:00-18:00, 22:00-24:00
         "valley": 0.08     # 00:00-08:00
     }
-    
+
     @staticmethod
     def get_period(hour: int) -> str:
         """Determine price period for hour."""
@@ -263,7 +204,7 @@ class PriceEstimator:
             return "peak"
         else:
             return "flat"
-    
+
     @staticmethod
     def get_price(hour: int) -> float:
         """Get price for hour."""
@@ -271,99 +212,16 @@ class PriceEstimator:
         return PriceEstimator.PVPC_PRICES[period]
 
 
-class JaatoEnergyAdvisor:
-    """Main advisor using jaato agents for intelligent recommendations."""
-    
-    def __init__(
-        self,
-        jaato_socket: str = "/tmp/jaato.sock",
-        influxdb_url: str = INFLUXDB_URL,
-        influxdb_token: str = ""
-    ):
-        self.jaato = JaatoClientWrapper(socket_path=jaato_socket)
-        self.influxdb = InfluxDBFetcher(url=influxdb_url, token=influxdb_token)
-        self.price_estimator = PriceEstimator()
-        
-        self._running = False
-        self._context_cache: Optional[EnergyContext] = None
-    
-    async def initialize(self) -> bool:
-        """Initialize connections."""
-        logger.info("Initializing Jaato Energy Advisor...")
-        
-        # Wait for InfluxDB to be ready (it may start after advisor)
-        logger.info("Waiting for InfluxDB to be ready...")
-        import asyncio
-        for attempt in range(10):
-            try:
-                import socket
-                sock = socket.socket()
-                sock.settimeout(1)
-                result = sock.connect_ex(("influxdb", 8086))
-                sock.close()
-                if result == 0:
-                    logger.info("✓ InfluxDB is ready")
-                    break
-            except:
-                pass
-            await asyncio.sleep(1)
-        
-        # Connect to jaato server
-        if not await self.jaato.connect():
-            logger.error("Failed to connect to jaato server")
-            return False
-        
-        logger.info("✓ Connected to jaato server")
-        return True
-    
-    async def build_context(self) -> EnergyContext:
-        """Build current energy context from InfluxDB."""
-        logger.info("Building energy context...")
-        
-        now = datetime.now()
-        
-        # Get current readings
-        readings = await self.influxdb.get_current_readings()
-        
-        # Get hourly patterns
-        patterns = await self.influxdb.get_hourly_patterns(hours=24)
-        
-        # Get price info
-        current_hour = now.hour
-        current_price = self.price_estimator.get_price(current_hour)
-        current_period = self.price_estimator.get_period(current_hour)
-        
-        context = EnergyContext(
-            current_consumption_w=readings["consumption"],
-            current_production_w=readings["production"],
-            grid_import_w=readings["import"],
-            grid_export_w=readings["export"],
-            current_hour=current_hour,
-            current_day_of_week=now.weekday(),
-            current_price_eur_kwh=current_price,
-            price_period=current_period,
-            hourly_consumption=patterns["consumption"],
-            hourly_production=patterns["production"]
-        )
-        
-        self._context_cache = context
-        return context
-    
-    def create_analysis_prompt(self, context: EnergyContext) -> str:
-        """Create detailed prompt for jaato agents."""
-        
-        # Calculate some metrics
-        total_consumption = sum(context.hourly_consumption.values()) / 1000  # kW
-        peak_hours = [h for h in range(24) if self.price_estimator.get_period(h) == "peak"]
-        peak_consumption = sum(
-            context.hourly_consumption.get(h, 0) 
-            for h in peak_hours
-        ) / 1000
-        peak_ratio = peak_consumption / total_consumption if total_consumption > 0 else 0
-        
-        prompt = f"""You are an expert home energy advisor with access to real-time data and predictive analytics.
+def build_context_block(context: EnergyContext, prices: PriceEstimator) -> str:
+    """Render the shared energy-data block sent to every specialist agent."""
+    total_consumption = sum(context.hourly_consumption.values()) / 1000  # kWh
+    peak_hours = [h for h in range(24) if prices.get_period(h) == "peak"]
+    peak_consumption = sum(
+        context.hourly_consumption.get(h, 0) for h in peak_hours
+    ) / 1000
+    peak_ratio = peak_consumption / total_consumption if total_consumption > 0 else 0
 
-## Current Energy Situation (as of {datetime.now().strftime('%Y-%m-%d %H:%M')})
+    block = f"""## Current Energy Situation (as of {datetime.now().strftime('%Y-%m-%d %H:%M')})
 
 ### Live Readings:
 - Current consumption: {context.current_consumption_w:.0f} W
@@ -383,187 +241,223 @@ class JaatoEnergyAdvisor:
 
 ### Hourly Consumption (last 24h):
 """
-        # Add hourly breakdown
-        for hour in sorted(context.hourly_consumption.keys()):
-            period = self.price_estimator.get_period(hour)
-            price = self.price_estimator.get_price(hour)
-            consumption = context.hourly_consumption.get(hour, 0)
-            prompt += f"  {hour:02d}:00 [{period:5s} €{price:.2f}] {consumption:6.0f} W\n"
-        
-        prompt += """
-## Your Task
+    for hour in sorted(context.hourly_consumption.keys()):
+        period = prices.get_period(hour)
+        price = prices.get_price(hour)
+        consumption = context.hourly_consumption.get(hour, 0)
+        block += f"  {hour:02d}:00 [{period:5s} €{price:.2f}] {consumption:6.0f} W\n"
 
-Provide 3-5 specific, actionable recommendations focusing on:
+    return block
 
-1. **Immediate Actions** (next 24 hours)
-   - What should the user do RIGHT NOW or schedule for today/tomorrow?
-   - Consider current price period and production levels
 
-2. **Appliance Scheduling**
-   - When to run dishwasher, washing machine, etc. for maximum savings?
-   - Be specific with times (e.g., "Run dishwasher at 13:30-15:30")
+class JaatoEnergyAdvisor:
+    """Orchestrates the three specialist jaato agents."""
 
-3. **Solar Self-Consumption**
-   - How to align consumption with solar production?
-   - Which hours offer best solar-to-consumption ratio?
+    def __init__(
+        self,
+        jaato_socket: str = JAATO_SOCKET,
+        env_file: str = ENV_FILE,
+        workspace: str = WORKSPACE,
+        influxdb_url: str = INFLUXDB_URL,
+        influxdb_token: str = INFLUXDB_TOKEN,
+    ):
+        self.client = IPCClient(
+            jaato_socket,
+            client_type=ClientType.API,   # load-bearing: keeps signal_completion
+            auto_start=True,
+            env_file=env_file,            # never None (handshake crashes on None)
+            workspace_path=workspace,
+        )
+        self.influxdb = InfluxDBFetcher(url=influxdb_url, token=influxdb_token)
+        self.prices = PriceEstimator()
+        self._running = False
 
-4. **Cost Optimization**
-   - Quantify potential savings in €/year for each recommendation
-   - Consider shifting peak consumption to valley hours
+    async def initialize(self) -> bool:
+        """Wait for InfluxDB, then connect (and cold-autostart) the daemon."""
+        logger.info("Initializing Jaato Energy Advisor...")
 
-5. **Pattern Insights**
-   - Any unusual patterns you notice?
-   - Long-term optimization opportunities?
+        parsed = urlparse(INFLUXDB_URL)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 8086
+        logger.info(f"Waiting for InfluxDB at {host}:{port} ...")
+        for _ in range(10):
+            sock = socket.socket()
+            sock.settimeout(1)
+            ready = sock.connect_ex((host, port)) == 0
+            sock.close()
+            if ready:
+                logger.info("✓ InfluxDB is ready")
+                break
+            await asyncio.sleep(1)
 
-For each recommendation, provide:
-- **Title**: Brief, actionable description
-- **Why**: Rationale based on the data
-- **When**: Specific time window
-- **Savings**: Estimated €/year
-- **Confidence**: High/Medium/Low
+        logger.info("Connecting to jaato daemon (cold autostart ~30-60s) ...")
+        if not await self.client.connect(timeout=120.0):
+            logger.error("Failed to connect/autostart jaato daemon — run the doctor")
+            return False
+        logger.info("✓ Connected to jaato daemon")
+        return True
 
-Be specific, data-driven, and actionable. The user is in Spain with PVPC tariff.
-"""
-        return prompt
-    
+    async def build_context(self) -> EnergyContext:
+        """Build current energy context from InfluxDB."""
+        logger.info("Building energy context...")
+        now = datetime.now()
+
+        readings = await self.influxdb.get_current_readings()
+        patterns = await self.influxdb.get_hourly_patterns(hours=24)
+
+        current_hour = now.hour
+        return EnergyContext(
+            current_consumption_w=readings["consumption"],
+            current_production_w=readings["production"],
+            grid_import_w=readings["import"],
+            grid_export_w=readings["export"],
+            current_hour=current_hour,
+            current_day_of_week=now.weekday(),
+            current_price_eur_kwh=self.prices.get_price(current_hour),
+            price_period=self.prices.get_period(current_hour),
+            hourly_consumption=patterns["consumption"],
+            hourly_production=patterns["production"],
+        )
+
+    async def run_specialist(
+        self, agent_name: str, prompt: str, timeout: float = 180.0
+    ) -> Dict[str, Any]:
+        """Run one specialist in its own session and collect its text output."""
+        logger.info(f"Running specialist: {agent_name}")
+        done = asyncio.Event()
+        chunks: List[str] = []
+        failure: List[str] = []
+
+        def on_output(ev: AgentOutputEvent) -> None:
+            if ev.text:
+                chunks.append(ev.text)
+
+        def on_turn_complete(_: TurnCompletedEvent) -> None:
+            done.set()
+
+        def on_error(ev: ErrorEvent) -> None:
+            failure.append(f"{ev.error_type}: {ev.error}" if ev.error_type else ev.error)
+            done.set()
+
+        unsubscribe = [
+            self.client.subscribe(EventType.AGENT_OUTPUT, on_output),
+            self.client.subscribe(EventType.TURN_COMPLETED, on_turn_complete),
+            self.client.subscribe(EventType.ERROR, on_error),
+        ]
+        try:
+            # profile + agent both name the stage; JAATO_PROFILE_SET (from .env)
+            # selects the provider/model tier.
+            sid = await self.client.create_session(profile=agent_name, agent=agent_name)
+            if not sid:
+                return {"agent": agent_name, "text": "",
+                        "error": "session.new failed — check provider auth / daemon log"}
+            await self.client.send_message(prompt)
+            await asyncio.wait_for(done.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            failure.append(f"timeout after {timeout}s waiting for TURN_COMPLETED")
+        finally:
+            for unsub in unsubscribe:
+                unsub()
+            await self.client.end_session()
+
+        return {
+            "agent": agent_name,
+            "text": "".join(chunks),
+            "error": failure[0] if failure else None,
+        }
+
     async def analyze_once(self) -> Dict[str, Any]:
-        """Perform one-shot analysis and return results."""
+        """Build context once, then run every specialist over it."""
         logger.info("Starting one-shot analysis...")
-        
-        # Build context
         context = await self.build_context()
-        
-        # Create prompt
-        prompt = self.create_analysis_prompt(context)
-        
-        # Send to jaato and collect response
-        logger.info("Sending analysis request to jaato agents...")
-        
-        full_response = []
+        context_block = build_context_block(context, self.prices)
+
         analysis_start = datetime.now()
-        
-        async for event in self.jaato.send_message(prompt):
-            full_response.append(str(event))
-            
-            # Stream output in real-time
-            if event.type == EventType.AGENT_OUTPUT:
-                logger.info(f"[JAATO] {event.content}")
-        
-        analysis_duration = (datetime.now() - analysis_start).total_seconds()
-        
+        specialists: List[Dict[str, Any]] = []
+        for agent_name in SPECIALISTS:
+            prompt = (
+                f"{context_block}\n\n## Your Task\n\n{SPECIALIST_TASKS[agent_name]}\n"
+            )
+            result = await self.run_specialist(agent_name, prompt)
+            specialists.append(result)
+            if result["error"]:
+                logger.warning(f"[{agent_name}] {result['error']}")
+            else:
+                logger.info(f"[{agent_name}] {len(result['text'])} chars")
+
+        duration = (datetime.now() - analysis_start).total_seconds()
         result = {
             "timestamp": datetime.now().isoformat(),
             "context": {
                 "consumption_w": context.current_consumption_w,
                 "production_w": context.current_production_w,
                 "price_eur_kwh": context.current_price_eur_kwh,
-                "price_period": context.price_period
+                "price_period": context.price_period,
             },
-            "analysis": "".join(full_response),
-            "duration_seconds": analysis_duration
+            "specialists": specialists,
+            "duration_seconds": duration,
         }
-        
-        logger.info(f"Analysis completed in {analysis_duration:.1f}s")
+        logger.info(f"Analysis completed in {duration:.1f}s")
         return result
-    
+
     async def start_streaming(self, interval_seconds: int = 300):
-        """Start continuous streaming analysis."""
+        """Run analysis on a fixed interval until stopped."""
         logger.info(f"Starting continuous analysis (interval: {interval_seconds}s)")
         self._running = True
-        
         while self._running:
             try:
-                # Perform analysis
                 result = await self.analyze_once()
-                
-                # Emit result as event (could be sent to external system)
                 logger.info("=" * 60)
                 logger.info("ANALYSIS RESULT:")
                 logger.info(json.dumps(result, indent=2, default=str))
                 logger.info("=" * 60)
-                
-                # Wait for next interval
                 logger.info(f"Waiting {interval_seconds}s until next analysis...")
                 await asyncio.sleep(interval_seconds)
-                
             except Exception as e:
                 logger.error(f"Error during analysis: {e}", exc_info=True)
-                await asyncio.sleep(60)  # Wait before retry
-    
+                await asyncio.sleep(60)
+
     async def stop(self):
-        """Stop the advisor."""
+        """Stop the advisor and disconnect."""
         logger.info("Stopping Jaato Energy Advisor...")
         self._running = False
-        await self.jaato.disconnect()
+        await self.client.disconnect()
 
 
-async def main():
-    """Main entry point."""
-    import argparse
-    
-    parser = argparse.ArgumentParser(
-        description="Jaato-Powered Smart Energy Advisor"
-    )
-    parser.add_argument(
-        '--jaato-socket',
-        default='/tmp/jaato.sock',
-        help='Path to jaato server socket'
-    )
-    parser.add_argument(
-        '--influxdb-url',
-        default=INFLUXDB_URL,
-        help='InfluxDB URL'
-    )
-    parser.add_argument(
-        '--analyze-once',
-        action='store_true',
-        help='Run analysis once and exit'
-    )
-    parser.add_argument(
-        '--interval',
-        type=int,
-        default=300,
-        help='Analysis interval in seconds (default: 300 = 5 min)'
-    )
-    
+async def main() -> int:
+    parser = argparse.ArgumentParser(description="Jaato-Powered Smart Energy Advisor")
+    parser.add_argument('--jaato-socket', default=JAATO_SOCKET, help='jaato server socket')
+    parser.add_argument('--influxdb-url', default=INFLUXDB_URL, help='InfluxDB URL')
+    parser.add_argument('--analyze-once', action='store_true', help='Run once and exit')
+    parser.add_argument('--interval', type=int, default=300,
+                        help='Analysis interval in seconds (default: 300)')
     args = parser.parse_args()
-    
-    # Create advisor
+
     advisor = JaatoEnergyAdvisor(
         jaato_socket=args.jaato_socket,
-        influxdb_url=args.influxdb_url
+        influxdb_url=args.influxdb_url,
     )
-    
-    # Initialize
+
     if not await advisor.initialize():
         logger.error("Failed to initialize advisor")
         return 1
-    
+
     try:
         if args.analyze_once:
-            # Single analysis
             result = await advisor.analyze_once()
             print("\n" + "=" * 60)
             print("ANALYSIS RESULT:")
             print("=" * 60)
             print(json.dumps(result, indent=2, default=str))
         else:
-            # Continuous streaming
             await advisor.start_streaming(interval_seconds=args.interval)
-    
     except KeyboardInterrupt:
         logger.info("Received interrupt signal")
-    
     finally:
         await advisor.stop()
-    
+
     return 0
 
 
 if __name__ == "__main__":
-    if not JAATO_SDK_AVAILABLE:
-        logger.error("jaato-sdk is not installed. Install with:")
-        logger.error("  pip install jaato-sdk")
-        sys.exit(1)
-    
-    exit(asyncio.run(main()))
+    raise SystemExit(asyncio.run(main()))

@@ -4,7 +4,7 @@ services:
     image: influxdb:2.7
     container_name: energy_monitoring_influxdb
     ports:
-      - "8086:8086"
+      - "127.0.0.1:8086:8086"
     env_file:
       - ./.env
       - ./.env
@@ -23,6 +23,17 @@ services:
     restart: unless-stopped
     networks:
       - energy_monitoring_net
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
 
   # Grafana - Visualization dashboards
   grafana:
@@ -50,6 +61,17 @@ services:
       - energy_monitoring_net
     depends_on:
       - influxdb
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
 
   # Enphase Collector Daemon (Python-based)
   # This service builds and runs the collector
@@ -84,6 +106,17 @@ services:
     #   - energy_monitoring_net
     depends_on:
       - influxdb
+    healthcheck:
+      test: ["CMD-SHELL", "ls /proc/1/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
 
   # Jaato Energy Advisor - AI-powered energy optimization
   # Uses multi-agent system for intelligent recommendations
@@ -117,11 +150,16 @@ services:
       - influxdb
     # Optional: Add health check
     healthcheck:
-      test: ["CMD", "python3", "-c", "import sys; sys.exit(0)"]
+      test: ["CMD-SHELL", "ls /proc/1/status || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
 
 networks:
   energy_monitoring_net:

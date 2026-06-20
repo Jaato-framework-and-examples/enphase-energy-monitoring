@@ -1,0 +1,11 @@
+# price_analyst — zhipuai set: glm-4.7.
+name: price_analyst
+inherits: [_base_price_analyst]
+plugins: []  # empty keeps the inherited _base surface
+model: glm-4.7
+provider: zhipuai
+plugin_configs:
+  zhipuai:
+    api_params:
+      temperature: 0.6  # conservative, numbers-focused analysis
+      max_tokens: 1500

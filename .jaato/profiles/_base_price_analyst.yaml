@@ -1,0 +1,10 @@
+# Tier-1 base for the 'price_analyst' stage — PROVIDER-AGNOSTIC.
+# Holds stage determinism (no tools, single analysis turn).
+# Active model + provider live in profiles/<set>/price_analyst.yaml,
+# selected by JAATO_PROFILE_SET.  This base MUST stay inherit-able
+# (do not bind a provider/model here — that breaks set-selection).
+name: _base_price_analyst
+description: PVPC price-analysis stage (base; bind provider/model in a set).
+plugins: []  # no tools — works from data embedded in the prompt
+max_turns: 1  # single analysis turn; ends naturally (no signal_completion)
+suppress_base_instructions: true  # narrow goal-focused agent; persona is enough

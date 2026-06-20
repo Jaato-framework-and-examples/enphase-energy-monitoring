@@ -45,4 +45,15 @@ grafana_data/
 .pytest_cache/
 .coverage
 htmlcov/
-.jaato
+
+# jaato workspace: ignore runtime state (sessions, logs, stored auth, vision),
+# but DO track the profile-set + agent personas (versioned source).
+.jaato/*
+!.jaato/profiles/
+!.jaato/agents/
+
+# Editor / language-server junk
+.jdtls/
+
+# Stray env backup — may contain real credentials, never commit
+.env.bak
