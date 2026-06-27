@@ -6,6 +6,7 @@ model: glm-4.7
 provider: zhipuai
 plugin_configs:
   zhipuai:
+    api_key: pass://jaato/zhipuai/api-key  # resolved daemon-side (PassResolver)
     api_params:
       temperature: 0.7  # some latitude for optimization strategies
       max_tokens: 1500
