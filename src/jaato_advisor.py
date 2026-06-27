@@ -12,8 +12,8 @@ Architecture:
 - Each specialist runs in its own jaato session, selected from the
   `.jaato/profiles/` profile-set via JAATO_PROFILE_SET + the agent persona in
   `.jaato/agents/<name>.md`. Sessions run sequentially on one API client.
-- Completion is detected per turn via EventType.TURN_COMPLETED; streamed text
-  arrives via EventType.AGENT_OUTPUT.
+- Each specialist turn runs through the jaato-sdk convenience facade
+  (`IPCClient.session` + `s.ask`), which owns the send-and-wait recipe.
 
 Preflight: python -m jaato_sdk.doctor --workspace . --env-file .env
 """
@@ -30,8 +30,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
-from jaato_sdk import IPCClient, ClientType, EventType
-from jaato_sdk.events import AgentOutputEvent, ErrorEvent, TurnCompletedEvent
+from jaato_sdk import IPCClient, ClientType, AgentError
 
 from influxdb_client import InfluxDBClient
 
@@ -261,11 +260,15 @@ class JaatoEnergyAdvisor:
         influxdb_url: str = INFLUXDB_URL,
         influxdb_token: str = INFLUXDB_TOKEN,
     ):
+        # Connection knobs reused by run_specialist's per-session facade calls.
+        self.jaato_socket = jaato_socket
+        self.env_file = env_file          # never None (handshake crashes on None)
+        self.workspace = workspace
         self.client = IPCClient(
             jaato_socket,
             client_type=ClientType.API,   # load-bearing: keeps signal_completion
             auto_start=True,
-            env_file=env_file,            # never None (handshake crashes on None)
+            env_file=env_file,
             workspace_path=workspace,
         )
         self.influxdb = InfluxDBFetcher(url=influxdb_url, token=influxdb_token)
@@ -324,47 +327,31 @@ class JaatoEnergyAdvisor:
     ) -> Dict[str, Any]:
         """Run one specialist in its own session and collect its text output."""
         logger.info(f"Running specialist: {agent_name}")
-        done = asyncio.Event()
-        chunks: List[str] = []
-        failure: List[str] = []
-
-        def on_output(ev: AgentOutputEvent) -> None:
-            if ev.text:
-                chunks.append(ev.text)
-
-        def on_turn_complete(_: TurnCompletedEvent) -> None:
-            done.set()
-
-        def on_error(ev: ErrorEvent) -> None:
-            failure.append(f"{ev.error_type}: {ev.error}" if ev.error_type else ev.error)
-            done.set()
-
-        unsubscribe = [
-            self.client.subscribe(EventType.AGENT_OUTPUT, on_output),
-            self.client.subscribe(EventType.TURN_COMPLETED, on_turn_complete),
-            self.client.subscribe(EventType.ERROR, on_error),
-        ]
         try:
             # profile + agent both name the stage; JAATO_PROFILE_SET (from .env)
-            # selects the provider/model tier.
-            sid = await self.client.create_session(profile=agent_name, agent=agent_name)
-            if not sid:
-                return {"agent": agent_name, "text": "",
-                        "error": "session.new failed — check provider auth / daemon log"}
-            await self.client.send_message(prompt)
-            await asyncio.wait_for(done.wait(), timeout=timeout)
+            # selects the provider/model tier. The facade owns connect →
+            # create_session → send-and-wait → disconnect; sources=None
+            # collects every output chunk, matching the old on_output (which
+            # appended all output, not just the model source).
+            async with IPCClient.session(
+                profile=agent_name,
+                agent=agent_name,
+                client_type=ClientType.API,
+                env_file=self.env_file,
+                workspace_path=self.workspace,
+                socket_path=self.jaato_socket,
+            ) as s:
+                text = await asyncio.wait_for(
+                    s.ask(prompt, sources=None), timeout=timeout
+                )
+            return {"agent": agent_name, "text": text, "error": None}
+        except AgentError as e:
+            # Per-specialist fault isolation: an error terminal now raises, so
+            # one failing specialist must not abort the whole analysis.
+            return {"agent": agent_name, "text": "", "error": str(e)}
         except asyncio.TimeoutError:
-            failure.append(f"timeout after {timeout}s waiting for TURN_COMPLETED")
-        finally:
-            for unsub in unsubscribe:
-                unsub()
-            await self.client.end_session()
-
-        return {
-            "agent": agent_name,
-            "text": "".join(chunks),
-            "error": failure[0] if failure else None,
-        }
+            return {"agent": agent_name, "text": "",
+                    "error": f"timeout after {timeout}s waiting for turn completion"}
 
     async def analyze_once(self) -> Dict[str, Any]:
         """Build context once, then run every specialist over it."""
